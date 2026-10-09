@@ -91,7 +91,7 @@ const SCHEMA = [
     id SERIAL PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('manager','va')),
+    role TEXT NOT NULL CHECK (role IN ('admin','manager','va')),
     password_hash TEXT NOT NULL,
     manager_id INTEGER,
     discord TEXT DEFAULT '',
@@ -106,6 +106,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS accounts (
     id SERIAL PRIMARY KEY,
     va_id INTEGER NOT NULL REFERENCES users(id),
+    platform TEXT NOT NULL DEFAULT 'instagram',
     url TEXT NOT NULL,
     handle TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'actif',
@@ -118,7 +119,7 @@ const SCHEMA = [
     note TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT ${NOW_TXT}
   )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS accounts_handle_lower ON accounts (lower(handle))`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS accounts_platform_handle ON accounts (platform, lower(handle))`,
   `CREATE INDEX IF NOT EXISTS accounts_va ON accounts (va_id)`,
   `CREATE TABLE IF NOT EXISTS penalties (
     id SERIAL PRIMARY KEY,
@@ -139,16 +140,36 @@ function ensureReady() {
     ready = (async () => {
       const t = await one("SELECT to_regclass('public.settings')::text AS t");
       if (!t || !t.t) for (const s of SCHEMA) await q(s);
-      // Premier démarrage : création du compte manager
-      if (!(await one("SELECT 1 AS x FROM users WHERE role='manager' LIMIT 1"))) {
-        const pass = process.env.MANAGER_PASS;
-        if (!pass || pass.length < 8) {
-          throw new HttpError(500, 'Aucun compte manager : ajoute MANAGER_PASS (8 caractères min) dans les variables Netlify, puis redéploie.');
+      // Migration : la base existante n'accepte pas encore le rôle « admin »
+      const checks = await q("SELECT conname, pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conrelid='users'::regclass AND contype='c'");
+      const roleChecks = checks.filter((c) => c.d.includes('role'));
+      if (roleChecks.length && !roleChecks.some((c) => c.d.includes("'admin'"))) {
+        for (const c of roleChecks) await q(`ALTER TABLE users DROP CONSTRAINT "${c.conname}"`);
+        await q("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin','manager','va'))");
+      }
+      // Migration : colonne « réseau » des comptes (base existante = tout Instagram)
+      if (!(await one("SELECT 1 AS x FROM information_schema.columns WHERE table_name='accounts' AND column_name='platform'"))) {
+        await q("ALTER TABLE accounts ADD COLUMN platform TEXT NOT NULL DEFAULT 'instagram'");
+        await q('DROP INDEX IF EXISTS accounts_handle_lower');
+        await q('CREATE UNIQUE INDEX IF NOT EXISTS accounts_platform_handle ON accounts (platform, lower(handle))');
+      }
+      // Il doit toujours exister un admin : le premier compte créé (MANAGER_USER) le devient
+      if (!(await one("SELECT 1 AS x FROM users WHERE role='admin' LIMIT 1"))) {
+        const wanted = (process.env.MANAGER_USER || '').trim();
+        let target = wanted ? await one("SELECT id FROM users WHERE lower(username)=lower($1) AND role='manager'", [wanted]) : null;
+        if (!target) target = await one("SELECT id FROM users WHERE role='manager' ORDER BY id LIMIT 1");
+        if (target) {
+          await q("UPDATE users SET role='admin' WHERE id=$1", [target.id]);
+        } else {
+          const pass = process.env.MANAGER_PASS;
+          if (!pass || pass.length < 8) {
+            throw new HttpError(500, 'Aucun compte admin : ajoute MANAGER_PASS (8 caractères min) dans les variables Netlify, puis redéploie.');
+          }
+          const user = (wanted || 'admin').trim();
+          await q("INSERT INTO users (username, name, role, password_hash) VALUES ($1,$2,'admin',$3) ON CONFLICT DO NOTHING",
+            [user, user, hashPw(pass)]);
+          console.log('Compte admin créé :', user);
         }
-        const user = (process.env.MANAGER_USER || 'manager').trim();
-        await q("INSERT INTO users (username, name, role, password_hash) VALUES ($1,$2,'manager',$3) ON CONFLICT DO NOTHING",
-          [user, user, hashPw(pass)]);
-        console.log('Compte manager créé :', user);
       }
     })().catch((e) => { ready = null; throw e; });
   }
@@ -194,15 +215,52 @@ async function currentUser(req) {
 }
 
 // ---------- Utilitaires métier ----------
-function handleFromUrl(url) {
-  let u = String(url || '').trim();
+const PLATFORMS = {
+  instagram: { label: 'Instagram', site: 'https://www.instagram.com', hosts: ['instagram.com'] },
+  tiktok:    { label: 'TikTok', site: 'https://www.tiktok.com', hosts: ['tiktok.com'], at: true },
+  facebook:  { label: 'Facebook', site: 'https://www.facebook.com', hosts: ['facebook.com', 'fb.com'] },
+  x:         { label: 'X (Twitter)', site: 'https://x.com', hosts: ['x.com', 'twitter.com'] },
+  youtube:   { label: 'YouTube', site: 'https://www.youtube.com', hosts: ['youtube.com'], at: true, skip: ['channel', 'c', 'user'] },
+  snapchat:  { label: 'Snapchat', site: 'https://www.snapchat.com', hosts: ['snapchat.com'], skip: ['add'], pre: 'add/' },
+  threads:   { label: 'Threads', site: 'https://www.threads.com', hosts: ['threads.net', 'threads.com'], at: true },
+  linkedin:  { label: 'LinkedIn', site: 'https://www.linkedin.com', hosts: ['linkedin.com'], skip: ['in', 'company'], pre: 'in/' },
+  telegram:  { label: 'Telegram', site: 'https://t.me', hosts: ['t.me', 'telegram.me'] },
+  reddit:    { label: 'Reddit', site: 'https://www.reddit.com', hosts: ['reddit.com'], skip: ['user', 'u'], pre: 'user/' },
+  pinterest: { label: 'Pinterest', site: 'https://www.pinterest.com', hosts: ['pinterest.com'] },
+  autre:     { label: 'Autre', hosts: [] },
+};
+// Lit un lien (ou un simple pseudo) et renvoie { url propre, handle, login par défaut }
+function parseAccount(platform, input) {
+  const P = PLATFORMS[platform];
+  if (!P) throw bad('Réseau inconnu');
+  let u = String(input || '').trim();
   if (!u) throw bad('Lien du compte requis');
-  if (!/^https?:\/\//i.test(u)) u = 'https://www.instagram.com/' + u.replace(/^@/, '');
+  if (!/^https?:\/\//i.test(u)) {
+    const name = u.replace(/^@/, '');
+    if (!P.site || !/^[^\s/?#]{1,100}$/.test(name)) throw bad('Colle le lien complet du compte (https://…)');
+    u = `${P.site}/${P.pre || ''}${P.at ? '@' : ''}${name}`;
+  }
   let parsed;
   try { parsed = new URL(u); } catch { throw bad('Lien invalide'); }
-  const seg = parsed.pathname.split('/').filter(Boolean)[0];
-  if (!seg) throw bad('Impossible de lire le pseudo dans le lien');
-  return { url: 'https://www.instagram.com/' + seg, handle: '@' + seg };
+  const host = parsed.hostname.toLowerCase().replace(/^(www|m|mobile|web)\./, '');
+  if (P.hosts.length && !P.hosts.some((h) => host === h || host.endsWith('.' + h))) throw bad(`Ce lien n'est pas un lien ${P.label}`);
+  const segs = parsed.pathname.split('/').filter(Boolean);
+  if (platform === 'autre') {
+    const path = segs.join('/');
+    return { url: `${parsed.protocol}//${parsed.host}${path ? '/' + path : ''}`, handle: path ? `${host}/${segs[segs.length - 1]}` : host, login: '' };
+  }
+  if (platform === 'facebook' && segs[0] === 'profile.php') {
+    const id = parsed.searchParams.get('id');
+    if (!id || !/^\d+$/.test(id)) throw bad('Lien Facebook invalide');
+    return { url: `${P.site}/profile.php?id=${id}`, handle: '@id' + id, login: '' };
+  }
+  let skipUsed = '';
+  if (P.skip && segs[0] && P.skip.includes(segs[0].toLowerCase())) skipUsed = segs.shift().toLowerCase();
+  const name = segs[0];
+  if (!name) throw bad('Impossible de lire le pseudo dans le lien');
+  const bare = name.replace(/^@/, '');
+  if (!bare) throw bad('Impossible de lire le pseudo dans le lien');
+  return { url: `${P.site}/${skipUsed ? skipUsed + '/' : ''}${name}`, handle: '@' + bare, login: bare };
 }
 const cleanTotp = (s) => String(s || '').replace(/\s+/g, '').toUpperCase();
 
@@ -245,7 +303,7 @@ const pubUser = (u) => ({
   last_login: u.last_login, created_at: u.created_at,
 });
 const pubAccount = (a) => ({
-  id: a.id, va_id: a.va_id, va_name: a.va_name, url: a.url, handle: a.handle, status: a.status,
+  id: a.id, va_id: a.va_id, va_name: a.va_name, platform: a.platform, url: a.url, handle: a.handle, status: a.status,
   login_user: a.login_user, has_password: !!a.password_enc, has_2fa: !!a.totp_enc, no2fa: !!a.no2fa,
   followers: a.followers, added_by_va: !!a.added_by_va, note: a.note, created_at: a.created_at,
 });
@@ -299,7 +357,7 @@ route('GET', '/api/stats', 'manager', async () => {
     payRows(week),
     q('SELECT a.status, COUNT(*)::int AS n FROM accounts a JOIN users u ON u.id=a.va_id WHERE u.retired=0 GROUP BY a.status'),
     one('SELECT COALESCE(SUM(amount),0)::float8 AS s FROM penalties WHERE substr(created_at,1,10)>=$1 AND substr(created_at,1,10)<$2', [week.start, week.end]),
-    q(`SELECT a.id, a.handle, a.status, a.created_at, a.added_by_va, u.name AS va_name
+    q(`SELECT a.id, a.handle, a.platform, a.status, a.created_at, a.added_by_va, u.name AS va_name
        FROM accounts a JOIN users u ON u.id=a.va_id ORDER BY a.id DESC LIMIT 8`),
   ]);
   const byStatus = {};
@@ -322,7 +380,7 @@ route('GET', '/api/vas', 'manager', async ({ user, query }) => {
   return { vas: rows.map((r) => ({ ...pubUser(r), manager_name: r.manager_name, counted: r.counted, total: r.total })), me: user.id };
 });
 route('GET', '/api/managers', 'manager', async () => ({
-  managers: await q("SELECT id, name FROM users WHERE role='manager' AND retired=0 ORDER BY name"),
+  managers: await q("SELECT id, name FROM users WHERE role IN ('admin','manager') AND retired=0 ORDER BY name"),
 }));
 route('POST', '/api/vas', 'manager', async ({ user, body }) => {
   const name = String(body.name || '').trim();
@@ -383,13 +441,15 @@ route('POST', '/api/accounts', 'any', async ({ user, body }) => {
   const vaId = user.role === 'va' ? user.id : Number(body.va_id);
   const va = vaId && await one("SELECT id FROM users WHERE id=$1 AND role='va' AND retired=0", [vaId]);
   if (!va) throw bad('VA introuvable');
-  const lines = user.role === 'manager' && body.bulk ? String(body.url).split(/\r?\n/).map((s) => s.trim()).filter(Boolean) : [body.url];
+  const lines = user.role !== 'va' && body.bulk ? String(body.url).split(/\r?\n/).map((s) => s.trim()).filter(Boolean) : [body.url];
   if (!lines.length) throw bad('Lien du compte requis');
   const no2fa = body.no2fa ? 1 : 0;
   const secret = no2fa ? '' : cleanTotp(body.totp);
   if (secret && !b32decode(secret).length) throw bad('Clé 2FA invalide');
 
-  const items = lines.map(handleFromUrl);
+  const platform = body.platform === undefined || body.platform === '' ? 'instagram' : String(body.platform);
+  if (!PLATFORMS[platform]) throw bad('Réseau inconnu');
+  const items = lines.map((l) => parseAccount(platform, l));
   const seen = new Set();
   for (const { handle } of items) {
     const k = handle.toLowerCase();
@@ -397,26 +457,28 @@ route('POST', '/api/accounts', 'any', async ({ user, body }) => {
     seen.add(k);
   }
   const keysArr = [...seen];
-  const dup = await one(`SELECT handle FROM accounts WHERE lower(handle) IN (${keysArr.map((_, i) => '$' + (i + 1)).join(',')}) LIMIT 1`, keysArr);
+  const dup = await one(`SELECT handle FROM accounts WHERE platform=$1 AND lower(handle) IN (${keysArr.map((_, i) => '$' + (i + 2)).join(',')}) LIMIT 1`, [platform, ...keysArr]);
   if (dup) throw bad(`${dup.handle} existe déjà`);
 
   const passEnc = enc(body.password || ''); const totpEnc = enc(secret);
   const args = []; const tuples = [];
-  for (const { url, handle } of items) {
+  for (const { url, handle, login } of items) {
     const b = args.length;
-    args.push(vaId, url, handle, String(body.login_user || '').trim() || handle.slice(1), passEnc, totpEnc, no2fa, user.role === 'va' ? 1 : 0);
-    tuples.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8})`);
+    args.push(vaId, platform, url, handle, String(body.login_user || '').trim() || login, passEnc, totpEnc, no2fa, user.role === 'va' ? 1 : 0);
+    tuples.push(`(${Array.from({ length: 9 }, (_, i) => '$' + (b + i + 1)).join(',')})`);
   }
-  const created = await q(`INSERT INTO accounts (va_id,url,handle,login_user,password_enc,totp_enc,no2fa,added_by_va)
+  const created = await q(`INSERT INTO accounts (va_id,platform,url,handle,login_user,password_enc,totp_enc,no2fa,added_by_va)
     VALUES ${tuples.join(',')} RETURNING id`, args); // une seule requête = tout ou rien
   return { ids: created.map((r) => r.id) };
 });
 route('PATCH', '/api/accounts/:id', 'any', async ({ user, params, body }) => {
   const a = await accountForUser(user, params.id);
   let { url, handle } = a;
-  if (body.url !== undefined && body.url !== a.url) {
-    ({ url, handle } = handleFromUrl(body.url));
-    if (await one('SELECT id FROM accounts WHERE lower(handle)=lower($1) AND id<>$2', [handle, a.id])) throw bad(`${handle} existe déjà`);
+  const platform = body.platform === undefined || body.platform === '' ? a.platform : String(body.platform);
+  if (!PLATFORMS[platform]) throw bad('Réseau inconnu');
+  if ((body.url !== undefined && body.url !== a.url) || platform !== a.platform) {
+    ({ url, handle } = parseAccount(platform, body.url !== undefined ? body.url : a.url));
+    if (await one('SELECT id FROM accounts WHERE platform=$1 AND lower(handle)=lower($2) AND id<>$3', [platform, handle, a.id])) throw bad(`${handle} existe déjà`);
   }
   const status = body.status === undefined ? a.status : body.status;
   if (!STATUSES.includes(status)) throw bad('Statut invalide');
@@ -431,8 +493,8 @@ route('PATCH', '/api/accounts/:id', 'any', async ({ user, params, body }) => {
   if (no2fa) totpEnc = '';
   const pwEnc = body.password !== undefined && body.password !== '' ? enc(body.password) : a.password_enc;
   const followers = body.followers === undefined ? a.followers : (body.followers === '' || body.followers === null ? null : Math.max(0, parseInt(body.followers, 10) || 0));
-  await q('UPDATE accounts SET url=$1, handle=$2, status=$3, login_user=$4, password_enc=$5, totp_enc=$6, no2fa=$7, followers=$8, note=$9 WHERE id=$10',
-    [url, handle, status, body.login_user === undefined ? a.login_user : String(body.login_user).trim(),
+  await q('UPDATE accounts SET url=$1, handle=$2, platform=$3, status=$4, login_user=$5, password_enc=$6, totp_enc=$7, no2fa=$8, followers=$9, note=$10 WHERE id=$11',
+    [url, handle, platform, status, body.login_user === undefined ? a.login_user : String(body.login_user).trim(),
       pwEnc, totpEnc, no2fa, followers, body.note === undefined ? a.note : String(body.note), a.id]);
   return { ok: true };
 });
@@ -442,7 +504,7 @@ route('DELETE', '/api/accounts/:id', 'manager', async ({ params }) => {
 });
 route('GET', '/api/accounts/:id/secret', 'any', async ({ user, params }) => {
   const a = await accountForUser(user, params.id);
-  return { login_user: a.login_user, password: dec(a.password_enc), totp_secret: user.role === 'manager' ? dec(a.totp_enc) : undefined };
+  return { login_user: a.login_user, password: dec(a.password_enc), totp_secret: user.role !== 'va' ? dec(a.totp_enc) : undefined };
 });
 route('GET', '/api/codes', 'any', async ({ user, query }) => {
   const ids = String(query.get('ids') || '').split(',').map(Number).filter(Boolean).slice(0, 300);
@@ -458,10 +520,10 @@ route('GET', '/api/codes', 'any', async ({ user, query }) => {
 });
 
 // --- Équipe de managers
-route('GET', '/api/team', 'manager', async () => ({
-  managers: await q("SELECT id, username, name, last_login, created_at, retired FROM users WHERE role='manager' ORDER BY retired, lower(name)"),
+route('GET', '/api/team', 'admin', async () => ({
+  managers: await q("SELECT id, username, name, role, last_login, created_at, retired FROM users WHERE role IN ('admin','manager') ORDER BY (role<>'admin'), retired, lower(name)"),
 }));
-route('POST', '/api/managers', 'manager', async ({ body }) => {
+route('POST', '/api/managers', 'admin', async ({ body }) => {
   const name = String(body.name || '').trim();
   const username = String(body.username || '').trim().toLowerCase();
   const password = String(body.password || '');
@@ -473,7 +535,7 @@ route('POST', '/api/managers', 'manager', async ({ body }) => {
     [username, name, hashPw(password)]);
   return { id: r.id };
 });
-route('PATCH', '/api/managers/:id', 'manager', async ({ user, params, body }) => {
+route('PATCH', '/api/managers/:id', 'admin', async ({ user, params, body }) => {
   const id = intId(params.id);
   if (id === user.id) throw bad('Tu ne peux pas te retirer toi-même');
   if (!(await one("SELECT 1 AS x FROM users WHERE id=$1 AND role='manager'", [id]))) throw notFound();
@@ -483,7 +545,7 @@ route('PATCH', '/api/managers/:id', 'manager', async ({ user, params, body }) =>
   if (retired) await q("UPDATE users SET manager_id=$1 WHERE role='va' AND manager_id=$2", [user.id, id]);
   return { ok: true };
 });
-route('POST', '/api/managers/:id/password', 'manager', async ({ user, params, body }) => {
+route('POST', '/api/managers/:id/password', 'admin', async ({ user, params, body }) => {
   const id = intId(params.id);
   if (id === user.id) throw bad('Pour ton propre mot de passe, utilise « Changer mon mot de passe »');
   if (!(await one("SELECT 1 AS x FROM users WHERE id=$1 AND role='manager'", [id]))) throw notFound();
@@ -553,7 +615,8 @@ export default async (req, context) => {
       const s = await currentUser(req);
       if (!s) throw new HttpError(401, 'Non connecté');
       user = s.user;
-      if (r.role !== 'any' && user.role !== r.role) throw forbid();
+      const allowed = r.role === 'any' || (r.role === 'manager' ? user.role !== 'va' : user.role === r.role);
+      if (!allowed) throw forbid();
       // Protection CSRF : les requêtes qui modifient doivent venir de la même origine
       if (req.method !== 'GET') {
         const origin = req.headers.get('origin');

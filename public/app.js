@@ -2,6 +2,8 @@
 // ---------- Utilitaires ----------
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const NETWORKS = { instagram: 'Instagram', tiktok: 'TikTok', facebook: 'Facebook', x: 'X (Twitter)', youtube: 'YouTube', snapchat: 'Snapchat', threads: 'Threads', linkedin: 'LinkedIn', telegram: 'Telegram', reddit: 'Reddit', pinterest: 'Pinterest', autre: 'Autre' };
+const netTag = (a) => `<span class="tag">${esc(NETWORKS[a.platform] || a.platform || 'Instagram')}</span>`;
 const STATUS = { actif: 'Actif', chauffe: 'En chauffe', shadowban: 'Shadowban', banni: 'Banni' };
 let me = null, appInfo = {};
 
@@ -108,13 +110,14 @@ const pwCell = (a) => a.has_password
 // ---------- Modales de comptes ----------
 function accountForm(a, role) {
   const st = role === 'va' ? ['actif', 'banni'] : Object.keys(STATUS);
-  return `${field('Lien du compte', 'url', { value: a ? a.url : '', ph: 'https://www.instagram.com/pseudo', req: true, help: a ? '' : 'Ouvre le profil dans Instagram → Partager le profil → Copier le lien.' })}
+  return `${selectField('Réseau', 'platform', Object.entries(NETWORKS), a ? a.platform : 'instagram')}
+    ${field('Lien du compte', 'url', { value: a ? a.url : '', ph: 'https://www.instagram.com/pseudo  ou  https://www.tiktok.com/@pseudo', req: true, help: a ? '' : 'Ouvre le profil dans l\'appli du réseau → Partager le profil → Copier le lien. Le lien doit correspondre au réseau choisi.' })}
     ${field('Login (identifiant de connexion)', 'login_user', { value: a ? a.login_user : '', ph: 'pseudo, e-mail ou téléphone utilisé pour se connecter' })}
     ${field('Mot de passe', 'password', { type: 'password', ph: a && a.has_password ? 'Laisser vide pour ne pas changer' : 'Mot de passe du compte (facultatif)' })}
-    ${field('Clé 2FA', 'totp', { ph: a && a.has_2fa ? 'Laisser vide pour ne pas changer' : 'ABCD EFGH IJKL MNOP QRST UVWX YZ23 4567', help: 'La clé donnée par Instagram quand tu actives l\'appli d\'authentification (Paramètres → Sécurité → Authentification à 2 facteurs).' })}
+    ${field('Clé 2FA', 'totp', { ph: a && a.has_2fa ? 'Laisser vide pour ne pas changer' : 'ABCD EFGH IJKL MNOP QRST UVWX YZ23 4567', help: 'La clé donnée par le réseau quand tu actives l\'appli d\'authentification (Paramètres → Sécurité → Authentification à 2 facteurs).' })}
     <label class="chk"><input type="checkbox" name="no2fa" ${a && a.no2fa ? 'checked' : ''}> Ce compte n'a pas de 2FA</label>
     ${a ? selectField('Statut', 'status', st.map(s => [s, STATUS[s]]), a.status) : ''}
-    ${a && role === 'manager' ? field('Abonnés', 'followers', { type: 'number', value: a.followers ?? '' }) : ''}`;
+    ${a && role !== 'va' ? field('Abonnés', 'followers', { type: 'number', value: a.followers ?? '' }) : ''}`;
 }
 function editAccount(a) {
   modal({
@@ -135,7 +138,7 @@ async function showLogin(id, handle) {
 function addLoginModal(vas, vaId) {
   modal({
     title: 'Enregistrer un login', sub: 'Le compte et ses accès sont enregistrés (chiffrés) et visibles par le VA et son manager.',
-    body: (me.role === 'manager' ? selectField('VA', 'va_id', vas.map(v => [v.id, v.name]), vaId) : '') + accountForm(null, me.role),
+    body: (me.role !== 'va' ? selectField('VA', 'va_id', vas.map(v => [v.id, v.name]), vaId) : '') + accountForm(null, me.role),
     submit: 'Ajouter',
     onSubmit: async (d) => { await post('/api/accounts', d); toast('Login enregistré'); render(); },
   });
@@ -196,14 +199,15 @@ function renderLogin() {
 }
 
 // ---------- Interface manager ----------
-const NAV = [['/', 'Tableau de bord', '▦'], ['/vas', 'VA', '☺'], ['/comptes', 'Comptes', '▯'], ['/logins', 'Logins', '🔑'], ['/penalites', 'Pénalités', '⊘'], ['/managers', 'Managers', '♛']];
+const NAV = [['/', 'Tableau de bord', '▦'], ['/vas', 'VA', '☺'], ['/comptes', 'Comptes', '▯'], ['/logins', 'Logins', '🔑'], ['/penalites', 'Pénalités', '⊘']];
+const navItems = () => (me.role === 'admin' ? [...NAV, ['/managers', 'Managers', '♛']] : NAV);
 async function shell(active) {
   let count = '';
   try { count = (await api('/api/stats')).accounts; } catch {}
   $('#app').innerHTML = `<div class="shell"><aside class="side">
     <div class="brand"><i>▮</i><span>CRM <b>Manager</b></span></div>
-    <nav class="nav">${NAV.map(([p, l, i]) => `<a href="#${p}" class="${p === active ? 'on' : ''}"><span>${i}</span>${l}${p === '/comptes' && count !== '' ? `<span class="count">${count}</span>` : ''}</a>`).join('')}</nav>
-    <div class="me">${avatar(me.name)}<div class="who"><b>${esc(me.name)}</b><span>Manager</span></div>
+    <nav class="nav">${navItems().map(([p, l, i]) => `<a href="#${p}" class="${p === active ? 'on' : ''}"><span>${i}</span>${l}${p === '/comptes' && count !== '' ? `<span class="count">${count}</span>` : ''}</a>`).join('')}</nav>
+    <div class="me">${avatar(me.name)}<div class="who"><b>${esc(me.name)}</b><span>${me.role === 'admin' ? 'Admin' : 'Manager'}</span></div>
       <button class="icon gray" data-act="pwd" title="Changer mon mot de passe">🔑</button><button class="icon gray" data-act="logout" title="Déconnexion">⇥</button></div>
   </aside><main class="main" id="view"></main></div>`;
   return $('#view');
@@ -222,7 +226,7 @@ async function viewDashboard(v) {
       <div class="stat"><span>Pénalités (semaine)</span><b>${money(s.penalties)}</b></div></div>
     <div class="card"><div class="ch"><h2>Derniers comptes ajoutés</h2></div><div class="tw"><table>
       <tr><th>Compte</th><th>VA</th><th>Statut</th><th>Ajouté le</th></tr>
-      ${s.recent.map(a => `<tr><td>${esc(a.handle)} ${a.added_by_va ? '<span class="tag">Ajouté par le VA</span>' : ''}</td><td>${esc(a.va_name)}</td><td>${badge(a.status)}</td><td>${fmtShort(a.created_at)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Aucun compte pour le moment</td></tr>'}
+      ${s.recent.map(a => `<tr><td>${esc(a.handle)} ${netTag(a)} ${a.added_by_va ? '<span class="tag">Ajouté par le VA</span>' : ''}</td><td>${esc(a.va_name)}</td><td>${badge(a.status)}</td><td>${fmtShort(a.created_at)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Aucun compte pour le moment</td></tr>'}
     </table></div></div>`;
 }
 
@@ -285,10 +289,10 @@ async function viewVaDetail(v, id) {
         <button class="btn sm" data-act="newpw" style="margin-top:10px">🔑 Nouveau mot de passe</button></div></div>
     </div>
     <div class="card"><div class="ch" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
-      <div><h2>Comptes Instagram</h2><p>Hors comptes bannis</p><div class="big green">${counted} <small>compte${counted > 1 ? 's' : ''}</small></div></div>
+      <div><h2>Comptes</h2><p>Hors comptes bannis</p><div class="big green">${counted} <small>compte${counted > 1 ? 's' : ''}</small></div></div>
       <button class="btn primary" data-act="addaccs">＋ Ajouter des comptes</button></div>
       <div class="tw"><table><tr><th>Compte</th><th>Login</th><th>Statut</th><th>Abonnés</th><th>Ajouté le</th><th></th></tr>
-      ${accounts.map(a => `<tr><td><a href="${esc(a.url)}" target="_blank" rel="noopener"><b>${esc(a.handle)}</b></a> ${a.added_by_va ? '<span class="tag">Ajouté par le VA</span>' : ''}</td>
+      ${accounts.map(a => `<tr><td><a href="${esc(a.url)}" target="_blank" rel="noopener"><b>${esc(a.handle)}</b></a> ${netTag(a)} ${a.added_by_va ? '<span class="tag">Ajouté par le VA</span>' : ''}</td>
         <td class="muted mono">${esc(a.login_user || '—')}${a.has_password ? ' 🔒' : ''}${a.has_2fa ? ' 2FA' : ''}</td><td>${statusSelect(a)}</td><td class="muted">${a.followers ?? '—'}</td><td>${fmtShort(a.created_at)}</td>
         <td class="right nowrap"><button class="icon" data-act="viewlogin" data-id="${a.id}" data-handle="${esc(a.handle)}" title="Voir le login">🔑</button>
         <button class="icon" data-act="editacc" data-acc="${esc(JSON.stringify(a))}" title="Modifier">✎</button>
@@ -310,19 +314,19 @@ async function viewVaDetail(v, id) {
   });
   actions.addaccs = () => modal({
     title: 'Ajouter des comptes', sub: `Pour ${va.name}. Pour enregistrer aussi le login, le mot de passe et la 2FA, utilise la page « Logins ».`,
-    body: field('Liens des comptes (un par ligne)', 'url', { type: 'textarea', rows: 6, ph: 'https://www.instagram.com/pseudo1\nhttps://www.instagram.com/pseudo2', req: true }),
+    body: selectField('Réseau', 'platform', Object.entries(NETWORKS), 'instagram') + field('Liens des comptes (un par ligne)', 'url', { type: 'textarea', rows: 6, ph: 'https://www.instagram.com/pseudo1\nhttps://www.instagram.com/pseudo2', req: true, help: 'Tous les liens doivent être du réseau choisi.' }),
     submit: 'Ajouter',
-    onSubmit: async (d) => { await post('/api/accounts', { va_id: id, url: d.url, bulk: true }); toast('Comptes ajoutés'); render(); },
+    onSubmit: async (d) => { await post('/api/accounts', { va_id: id, url: d.url, platform: d.platform, bulk: true }); toast('Comptes ajoutés'); render(); },
   });
 }
 
 async function viewComptes(v) {
   const [{ accounts }, { vas }] = await Promise.all([api('/api/accounts'), api('/api/vas')]);
-  const f = { va: '', status: '', q: '' };
+  const f = { va: '', status: '', net: '', q: '' };
   const draw = () => {
-    const list = accounts.filter(a => (!f.va || a.va_id == f.va) && (!f.status || a.status === f.status) && (!f.q || (a.handle + a.login_user).toLowerCase().includes(f.q.toLowerCase())));
+    const list = accounts.filter(a => (!f.va || a.va_id == f.va) && (!f.status || a.status === f.status) && (!f.net || a.platform === f.net) && (!f.q || (a.handle + a.login_user).toLowerCase().includes(f.q.toLowerCase())));
     $('#t').innerHTML = `<tr><th>Compte</th><th>VA</th><th>Statut</th><th>Abonnés</th><th>Ajouté le</th><th></th></tr>` + (list.map(a => `<tr>
-      <td><a href="${esc(a.url)}" target="_blank" rel="noopener"><b>${esc(a.handle)}</b></a> ${a.added_by_va ? '<span class="tag">Ajouté par le VA</span>' : ''}</td>
+      <td><a href="${esc(a.url)}" target="_blank" rel="noopener"><b>${esc(a.handle)}</b></a> ${netTag(a)} ${a.added_by_va ? '<span class="tag">Ajouté par le VA</span>' : ''}</td>
       <td><a href="#/vas/${a.va_id}">${esc(a.va_name)}</a></td><td>${statusSelect(a)}</td><td class="muted">${a.followers ?? '—'}</td><td>${fmtShort(a.created_at)}</td>
       <td class="right nowrap"><button class="icon" data-act="viewlogin" data-id="${a.id}" data-handle="${esc(a.handle)}">🔑</button>
       <button class="icon" data-act="editacc" data-acc="${esc(JSON.stringify(a))}">✎</button>
@@ -332,10 +336,11 @@ async function viewComptes(v) {
   v.innerHTML = `<div class="head"><div><h1>Comptes</h1><p class="muted" id="n"></p></div></div>
     <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap"><input class="search" id="q" placeholder="Rechercher un compte…">
       <select id="fv" style="width:200px"><option value="">Tous les VA</option>${vas.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>
-      <select id="fs" style="width:180px"><option value="">Tous les statuts</option>${Object.entries(STATUS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>
+      <select id="fs" style="width:180px"><option value="">Tous les statuts</option>${Object.entries(STATUS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
+      <select id="fnw" style="width:180px"><option value="">Tous les réseaux</option>${Object.entries(NETWORKS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>
     <div class="card"><div class="tw"><table id="t"></table></div></div>`;
   draw();
-  $('#q').oninput = e => { f.q = e.target.value; draw(); }; $('#fv').onchange = e => { f.va = e.target.value; draw(); }; $('#fs').onchange = e => { f.status = e.target.value; draw(); };
+  $('#q').oninput = e => { f.q = e.target.value; draw(); }; $('#fv').onchange = e => { f.va = e.target.value; draw(); }; $('#fs').onchange = e => { f.status = e.target.value; draw(); }; $('#fnw').onchange = e => { f.net = e.target.value; draw(); };
 }
 
 async function viewLogins(v) {
@@ -344,7 +349,7 @@ async function viewLogins(v) {
   const draw = () => {
     const list = accounts.filter(a => (!f.va || a.va_id == f.va) && (!f.q || (a.handle + a.login_user + a.va_name).toLowerCase().includes(f.q.toLowerCase())));
     $('#t').innerHTML = `<tr><th>Compte</th><th>VA</th><th>Login</th><th>Mot de passe</th><th>Code 2FA</th><th></th></tr>` + (list.map(a => `<tr>
-      <td><a href="${esc(a.url)}" target="_blank" rel="noopener"><b>${esc(a.handle)}</b></a><br>${badge(a.status)}</td><td>${esc(a.va_name)}</td>
+      <td><a href="${esc(a.url)}" target="_blank" rel="noopener"><b>${esc(a.handle)}</b></a> ${netTag(a)}<br>${badge(a.status)}</td><td>${esc(a.va_name)}</td>
       <td class="mono">${esc(a.login_user || '—')}</td><td>${pwCell(a)}</td><td>${codeCell(a)}</td>
       <td class="right nowrap"><button class="icon" data-act="editacc" data-acc="${esc(JSON.stringify(a))}" title="Modifier le login">✎</button></td></tr>`).join('') || '<tr><td colspan="6" class="empty">Aucun login enregistré</td></tr>');
   };
@@ -375,13 +380,13 @@ async function viewPen(v) {
 async function viewManagers(v) {
   const r = await api('/api/team');
   const actifs = r.managers.filter(m => !m.retired).length;
-  v.innerHTML = `<div class="head"><div><h1>Managers</h1><p class="muted">${actifs} manager${actifs > 1 ? 's' : ''} actif${actifs > 1 ? 's' : ''}. Un manager voit tous les VA, les comptes et les logins.</p></div>
+  v.innerHTML = `<div class="head"><div><h1>Managers</h1><p class="muted">${actifs} manager${actifs > 1 ? 's' : ''} actif${actifs > 1 ? 's' : ''}. Seul l'admin peut ajouter ou retirer des managers. Un manager voit tous les VA, les comptes et les logins.</p></div>
     <div class="actions"><button class="btn primary" data-act="addmanager">＋ Ajouter un manager</button></div></div>
     <div class="card"><div class="tw"><table><tr><th>Manager</th><th>Dernière connexion</th><th>Statut</th><th></th></tr>
-    ${r.managers.map(m => `<tr><td><span style="display:flex;align-items:center;gap:12px">${avatar(m.name)}<span><b>${esc(m.name)}</b>${m.id === me.id ? ' <span class="tag">Toi</span>' : ''}<br><span class="muted" style="font-size:12px">@${esc(m.username)}</span></span></span></td>
+    ${r.managers.map(m => `<tr><td><span style="display:flex;align-items:center;gap:12px">${avatar(m.name)}<span><b>${esc(m.name)}</b>${m.role === 'admin' ? ' <span class="tag">Admin</span>' : ''}${m.id === me.id ? ' <span class="tag">Toi</span>' : ''}<br><span class="muted" style="font-size:12px">@${esc(m.username)}</span></span></span></td>
       <td class="muted">${fmtTime(m.last_login)}</td>
       <td>${m.retired ? '<span class="badge banni">Retiré</span>' : '<span class="badge">Actif</span>'}</td>
-      <td class="right nowrap">${m.id === me.id ? '' : `<button class="btn sm" data-act="mgrpw" data-id="${m.id}" data-name="${esc(m.name)}" data-user="${esc(m.username)}">🔑 Nouveau mot de passe</button>
+      <td class="right nowrap">${m.role === 'admin' ? '' : `<button class="btn sm" data-act="mgrpw" data-id="${m.id}" data-name="${esc(m.name)}" data-user="${esc(m.username)}">🔑 Nouveau mot de passe</button>
         <button class="btn sm ${m.retired ? '' : 'danger'}" data-act="mgrretire" data-id="${m.id}" data-name="${esc(m.name)}" data-retired="${m.retired ? 1 : 0}">${m.retired ? 'Réintégrer' : 'Retirer'}</button>`}</td></tr>`).join('')}
     </table></div></div>`;
 }
@@ -410,13 +415,13 @@ actions.mgrretire = async (t) => {
 async function renderManager() {
   const h = (location.hash.replace(/^#/, '') || '/').split('/'); // ['', page, id]
   const page = '/' + (h[1] || '');
-  const v = await shell(page === '/' ? '/' : (NAV.find(n => n[0] === page) ? page : '/vas'));
+  const v = await shell(page === '/' ? '/' : (navItems().find(n => n[0] === page) ? page : '/vas'));
   if (page === '/') return viewDashboard(v);
   if (page === '/vas') return h[2] ? viewVaDetail(v, h[2]) : viewVas(v);
   if (page === '/comptes') return viewComptes(v);
   if (page === '/logins') return viewLogins(v);
   if (page === '/penalites') return viewPen(v);
-  if (page === '/managers') return viewManagers(v);
+  if (page === '/managers' && me.role === 'admin') return viewManagers(v);
   location.hash = '#/';
 }
 
@@ -432,7 +437,7 @@ async function renderVA() {
       <span class="muted">${by('actif')} actif${by('actif') > 1 ? 's' : ''} · ${by('chauffe')} en chauffe · ${by('shadowban')} shadowban · ${by('banni')} banni${by('banni') > 1 ? 's' : ''}</span></div></div>
     <button class="btn primary" id="addacc" style="width:100%;justify-content:center;padding:14px;margin-bottom:22px">＋ Ajouter un compte</button>
     <h2 style="margin-bottom:12px">Mes comptes (${accounts.length})</h2>
-    ${accounts.map(a => `<div class="vcard"><div class="t"><div><a href="${esc(a.url)}" target="_blank" rel="noopener"><b>${esc(a.handle)}</b></a><br><span class="muted" style="font-size:12px">${esc(a.login_user ? 'Login : ' + a.login_user : 'Login non renseigné')}</span></div>
+    ${accounts.map(a => `<div class="vcard"><div class="t"><div><a href="${esc(a.url)}" target="_blank" rel="noopener"><b>${esc(a.handle)}</b></a> ${netTag(a)}<br><span class="muted" style="font-size:12px">${esc(a.login_user ? 'Login : ' + a.login_user : 'Login non renseigné')}</span></div>
         <span>${badge(a.status)} <button class="icon gray" data-act="editacc" data-acc="${esc(JSON.stringify(a))}" title="Modifier">✎</button></span></div>
       <div class="r"><span class="muted">Mot de passe</span>${pwCell(a)}</div>
       <div class="r"><span class="muted">Code 2FA</span>${codeCell(a)}</div></div>`).join('') || '<div class="empty">Aucun compte. Ajoute ton premier compte avec le bouton ci-dessus.</div>'}</div>`;
@@ -446,7 +451,7 @@ async function render() {
     return me.role === 'va' ? await renderVA() : await renderManager();
   } catch (e) { toast(e.message); }
 }
-window.addEventListener('hashchange', () => me && me.role === 'manager' && render());
+window.addEventListener('hashchange', () => me && me.role !== 'va' && render());
 (async () => {
   try { const d = await api('/api/me'); me = d.user; appInfo = d; } catch { me = null; }
   render();
