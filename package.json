@@ -1,0 +1,14 @@
+{
+  "name": "crm-manager-va",
+  "version": "2.0.0",
+  "description": "Gestion des assistants virtuels (accès manager + accès VA) — version Netlify",
+  "scripts": {
+    "dev": "netlify dev",
+    "deploy": "netlify deploy --prod"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.0"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
