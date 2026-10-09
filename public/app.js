@@ -196,7 +196,7 @@ function renderLogin() {
 }
 
 // ---------- Interface manager ----------
-const NAV = [['/', 'Tableau de bord', '▦'], ['/vas', 'VA', '☺'], ['/comptes', 'Comptes', '▯'], ['/logins', 'Logins', '🔑'], ['/penalites', 'Pénalités', '⊘'], ['/paie', 'Paie', '＄']];
+const NAV = [['/', 'Tableau de bord', '▦'], ['/vas', 'VA', '☺'], ['/comptes', 'Comptes', '▯'], ['/logins', 'Logins', '🔑'], ['/penalites', 'Pénalités', '⊘'], ['/managers', 'Managers', '♛']];
 async function shell(active) {
   let count = '';
   try { count = (await api('/api/stats')).accounts; } catch {}
@@ -219,8 +219,7 @@ async function viewDashboard(v) {
       <div class="stat"><span>En chauffe</span><b class="amber">${s.byStatus.chauffe}</b></div>
       <div class="stat"><span>Shadowban</span><b style="color:var(--violet)">${s.byStatus.shadowban}</b></div>
       <div class="stat"><span>Bannis</span><b class="red">${s.byStatus.banni}</b></div>
-      <div class="stat"><span>Pénalités (semaine)</span><b>${money(s.penalties)}</b></div>
-      <div class="stat"><span>Paie à verser (semaine)</span><b class="green">${money(s.totalPay)}</b></div></div>
+      <div class="stat"><span>Pénalités (semaine)</span><b>${money(s.penalties)}</b></div></div>
     <div class="card"><div class="ch"><h2>Derniers comptes ajoutés</h2></div><div class="tw"><table>
       <tr><th>Compte</th><th>VA</th><th>Statut</th><th>Ajouté le</th></tr>
       ${s.recent.map(a => `<tr><td>${esc(a.handle)} ${a.added_by_va ? '<span class="tag">Ajouté par le VA</span>' : ''}</td><td>${esc(a.va_name)}</td><td>${badge(a.status)}</td><td>${fmtShort(a.created_at)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Aucun compte pour le moment</td></tr>'}
@@ -270,7 +269,7 @@ actions.addva = async () => {
 };
 
 async function viewVaDetail(v, id) {
-  const { va, accounts, pay } = await api('/api/vas/' + id);
+  const { va, accounts } = await api('/api/vas/' + id);
   const counted = accounts.filter(a => a.status !== 'banni').length;
   v.innerHTML = `<p><a href="#/vas" class="muted">← VA</a></p>
     <div class="head"><div style="display:flex;gap:16px;align-items:center">${avatar(va.name, true)}<div><h1 style="margin:0">${esc(va.name)}</h1>
@@ -281,14 +280,12 @@ async function viewVaDetail(v, id) {
       <div class="card"><div class="ch"><h2>Infos</h2></div><div class="cb">
         <div class="kv"><span>Telegram</span><span>${esc(va.telegram || '—')}</span><span>Discord</span><span>${esc(va.discord || '—')}</span>
         <span>Téléphone</span><span>${esc(va.phone || '—')}</span><span>Arrivé le</span><span>${fmtLong(va.created_at)}</span></div></div></div>
-      <div class="card"><div class="ch"><h2>Espace VA</h2><p>Le VA y ajoute ses comptes (lien, login, mot de passe, 2FA) et voit sa paie de la semaine.</p></div><div class="cb">
+      <div class="card"><div class="ch"><h2>Espace VA</h2><p>Le VA y ajoute ses comptes (lien, login, mot de passe, 2FA).</p></div><div class="cb">
         <div class="kv"><span>Pseudo</span><span class="mono">${esc(va.username)}</span><span>Connexion</span><span>${fmtTime(va.last_login)}</span></div>
         <button class="btn sm" data-act="newpw" style="margin-top:10px">🔑 Nouveau mot de passe</button></div></div>
-      <div class="card"><div class="ch"><h2>Paie de la semaine</h2><p>${weekLabel((await api('/api/me')).week)}</p></div><div class="cb">
-        <div class="kv"><span>Comptes</span><span>${pay.counted} × ${money(pay.rate)}</span><span>Pénalités</span><span class="red">− ${money(pay.penalties)}</span><span>À payer</span><b class="green">${money(pay.net)}</b></div></div></div>
     </div>
     <div class="card"><div class="ch" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
-      <div><h2>Comptes Instagram</h2><p>Comptent : actifs, en chauffe et shadowban</p><div class="big green">${pay.counted} <small>compte${pay.counted > 1 ? 's' : ''}</small></div></div>
+      <div><h2>Comptes Instagram</h2><p>Hors comptes bannis</p><div class="big green">${counted} <small>compte${counted > 1 ? 's' : ''}</small></div></div>
       <button class="btn primary" data-act="addaccs">＋ Ajouter des comptes</button></div>
       <div class="tw"><table><tr><th>Compte</th><th>Login</th><th>Statut</th><th>Abonnés</th><th>Ajouté le</th><th></th></tr>
       ${accounts.map(a => `<tr><td><a href="${esc(a.url)}" target="_blank" rel="noopener"><b>${esc(a.handle)}</b></a> ${a.added_by_va ? '<span class="tag">Ajouté par le VA</span>' : ''}</td>
@@ -299,7 +296,7 @@ async function viewVaDetail(v, id) {
       </table></div></div></div>`;
   actions.editva = () => modal({
     title: 'Modifier le VA', body: field('Nom', 'name', { value: va.name, req: true }) + field('Discord', 'discord', { value: va.discord }) + field('Telegram', 'telegram', { value: va.telegram }) +
-      field('Téléphone', 'phone', { value: va.phone }) + field('Tarif par compte ($/semaine)', 'rate', { type: 'number', step: '0.01', value: va.rate ?? '', ph: 'Vide = tarif général', help: 'Laisse vide pour utiliser le tarif général (page Paie).' }),
+      field('Téléphone', 'phone', { value: va.phone }),
     onSubmit: async (d) => { await patch('/api/vas/' + id, d); render(); },
   });
   actions.retireva = async () => {
@@ -363,7 +360,7 @@ async function viewLogins(v) {
 
 async function viewPen(v) {
   const [{ penalties }, { vas }] = await Promise.all([api('/api/penalties'), api('/api/vas')]);
-  v.innerHTML = `<div class="head"><div><h1>Pénalités</h1><p class="muted">Déduites de la paie de la semaine en cours.</p></div>
+  v.innerHTML = `<div class="head"><div><h1>Pénalités</h1><p class="muted">Sanctions enregistrées pour chaque VA.</p></div>
     <div class="actions"><button class="btn primary" id="addp">＋ Ajouter une pénalité</button></div></div>
     <div class="card"><div class="tw"><table><tr><th>VA</th><th>Montant</th><th>Raison</th><th>Date</th><th></th></tr>
     ${penalties.map(p => `<tr><td>${esc(p.va_name)}</td><td class="red">− ${money(p.amount)}</td><td>${esc(p.reason || '—')}</td><td>${fmtLong(p.created_at)}</td>
@@ -375,20 +372,40 @@ async function viewPen(v) {
   });
 }
 
-let payOffset = 0;
-async function viewPay(v) {
-  const r = await api('/api/pay?offset=' + payOffset);
-  v.innerHTML = `<div class="head"><div><h1>Paie</h1><p class="muted">Semaine du ${weekLabel(r.week)} (samedi → vendredi)</p></div>
-    <div class="actions"><button class="btn" id="pp">←</button><button class="btn" id="pn" ${payOffset >= 0 ? 'disabled' : ''}>→</button></div></div>
-    <div class="card"><div class="cb" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap"><label class="f" style="margin:0">Tarif par compte et par semaine ($)
-      <input id="rate" type="number" step="0.01" value="${r.rate}" style="width:160px"></label><button class="btn" id="saver">Enregistrer le tarif</button></div></div>
-    <div class="card"><div class="tw"><table><tr><th>VA</th><th>Comptes</th><th>Tarif</th><th>Brut</th><th>Pénalités</th><th class="right">À payer</th></tr>
-    ${r.rows.map(x => `<tr><td><a href="#/vas/${x.va_id}">${esc(x.name)}</a></td><td>${x.counted}</td><td>${money(x.rate)}</td><td>${money(x.gross)}</td><td class="red">− ${money(x.penalties)}</td><td class="right green"><b>${money(x.net)}</b></td></tr>`).join('') || '<tr><td colspan="6" class="empty">Aucun VA</td></tr>'}
-    <tr><td colspan="5" class="right"><b>Total</b></td><td class="right green"><b>${money(r.total)}</b></td></tr></table></div></div>
-    <p class="muted">Les comptes comptés sont ceux dont le statut est actif, en chauffe ou shadowban (état actuel). Les pénalités sont celles de la semaine affichée.</p>`;
-  $('#pp').onclick = () => { payOffset--; render(); }; $('#pn').onclick = () => { payOffset++; render(); };
-  $('#saver').onclick = async () => { try { await patch('/api/settings', { rate_per_account: $('#rate').value }); toast('Tarif enregistré'); render(); } catch (e) { toast(e.message); } };
+async function viewManagers(v) {
+  const r = await api('/api/team');
+  const actifs = r.managers.filter(m => !m.retired).length;
+  v.innerHTML = `<div class="head"><div><h1>Managers</h1><p class="muted">${actifs} manager${actifs > 1 ? 's' : ''} actif${actifs > 1 ? 's' : ''}. Un manager voit tous les VA, les comptes et les logins.</p></div>
+    <div class="actions"><button class="btn primary" data-act="addmanager">＋ Ajouter un manager</button></div></div>
+    <div class="card"><div class="tw"><table><tr><th>Manager</th><th>Dernière connexion</th><th>Statut</th><th></th></tr>
+    ${r.managers.map(m => `<tr><td><span style="display:flex;align-items:center;gap:12px">${avatar(m.name)}<span><b>${esc(m.name)}</b>${m.id === me.id ? ' <span class="tag">Toi</span>' : ''}<br><span class="muted" style="font-size:12px">@${esc(m.username)}</span></span></span></td>
+      <td class="muted">${fmtTime(m.last_login)}</td>
+      <td>${m.retired ? '<span class="badge banni">Retiré</span>' : '<span class="badge">Actif</span>'}</td>
+      <td class="right nowrap">${m.id === me.id ? '' : `<button class="btn sm" data-act="mgrpw" data-id="${m.id}" data-name="${esc(m.name)}" data-user="${esc(m.username)}">🔑 Nouveau mot de passe</button>
+        <button class="btn sm ${m.retired ? '' : 'danger'}" data-act="mgrretire" data-id="${m.id}" data-name="${esc(m.name)}" data-retired="${m.retired ? 1 : 0}">${m.retired ? 'Réintégrer' : 'Retirer'}</button>`}</td></tr>`).join('')}
+    </table></div></div>`;
 }
+actions.addmanager = () => modal({
+  title: 'Ajouter un manager', sub: 'Il pourra se connecter et gérer les VA, les comptes et les logins.',
+  body: field('Nom', 'name', { req: true }) + field('Pseudo de connexion', 'username', { req: true, help: 'Lettres minuscules, chiffres, . _ -' }) +
+    `<div style="display:flex;gap:8px;align-items:flex-end">${field('Mot de passe', 'password', { type: 'text', req: true, help: '8 caractères minimum' }).replace('<label class="f">', '<label class="f" style="flex:1">')}<button type="button" class="btn sm" data-act="genpw" style="margin-bottom:14px">Générer</button></div>`,
+  submit: 'Créer le manager',
+  onSubmit: async (d) => {
+    await post('/api/managers', d);
+    alert(`Accès manager créé.\n\nPseudo : ${d.username}\nMot de passe : ${d.password}\n\nTransmets-les-lui.`);
+    render();
+  },
+});
+actions.mgrpw = (t) => modal({
+  title: 'Nouveau mot de passe', sub: `Pour ${t.dataset.name}. Il sera déconnecté.`,
+  body: `<div style="display:flex;gap:8px;align-items:flex-end">${field('Mot de passe', 'password', { type: 'text', req: true }).replace('<label class="f">', '<label class="f" style="flex:1">')}<button type="button" class="btn sm" data-act="genpw" style="margin-bottom:14px">Générer</button></div>`,
+  onSubmit: async (d) => { await post(`/api/managers/${t.dataset.id}/password`, d); alert(`Nouveau mot de passe de ${t.dataset.user} :\n\n${d.password}`); },
+});
+actions.mgrretire = async (t) => {
+  const retire = t.dataset.retired !== '1';
+  if (!confirm(retire ? `Retirer ${t.dataset.name} ? Son accès sera coupé et ses VA passeront sous ta responsabilité.` : `Réintégrer ${t.dataset.name} ?`)) return;
+  await patch('/api/managers/' + t.dataset.id, { retired: retire }); render();
+};
 
 async function renderManager() {
   const h = (location.hash.replace(/^#/, '') || '/').split('/'); // ['', page, id]
@@ -399,29 +416,26 @@ async function renderManager() {
   if (page === '/comptes') return viewComptes(v);
   if (page === '/logins') return viewLogins(v);
   if (page === '/penalites') return viewPen(v);
-  if (page === '/paie') return viewPay(v);
+  if (page === '/managers') return viewManagers(v);
   location.hash = '#/';
 }
 
 // ---------- Espace VA ----------
 async function renderVA() {
-  const [{ accounts }, pay] = await Promise.all([api('/api/accounts'), api('/api/my-pay')]);
+  const { accounts } = await api('/api/accounts');
+  const counted = accounts.filter(a => a.status !== 'banni').length;
   const by = (s) => accounts.filter(a => a.status === s).length;
   $('#app').innerHTML = `<div class="va-wrap"><div class="va-top"><div class="brand"><i>▮</i><div><b style="color:var(--text)">${esc(me.name)}</b><br><span class="muted" style="font-weight:400;font-size:12px">Mon espace</span></div></div>
       <span><button class="icon gray" data-act="pwd" title="Changer mon mot de passe">🔑</button><button class="btn sm ghost" data-act="logout">⇥ Déconnexion</button></span></div>
-    <div class="vcard"><div class="r" style="display:block"><span class="muted">Mes comptes qui comptent</span>
-      <div class="big green">${pay.counted} <small>compte${pay.counted > 1 ? 's' : ''}</small></div>
+    <div class="vcard"><div class="r" style="display:block"><span class="muted">Mes comptes</span>
+      <div class="big green">${counted} <small>compte${counted > 1 ? 's' : ''}</small></div>
       <span class="muted">${by('actif')} actif${by('actif') > 1 ? 's' : ''} · ${by('chauffe')} en chauffe · ${by('shadowban')} shadowban · ${by('banni')} banni${by('banni') > 1 ? 's' : ''}</span></div></div>
-    <div class="vcard"><div class="r pay-row" id="payhead"><div><b>Ma paie de la semaine</b><br><span class="muted" style="font-size:12px">${weekLabel(pay.week)}</span></div><span class="pay-big">${money(pay.net)} <small class="muted">▾</small></span></div>
-      <div id="paydet" hidden><div class="r"><span class="muted">${pay.counted} compte${pay.counted > 1 ? 's' : ''} × ${money(pay.rate)}</span><span>${money(pay.gross)}</span></div>
-      ${pay.penalty_list.map(p => `<div class="r"><span class="muted">Pénalité${p.reason ? ' · ' + esc(p.reason) : ''}</span><span class="red">− ${money(p.amount)}</span></div>`).join('')}</div></div>
     <button class="btn primary" id="addacc" style="width:100%;justify-content:center;padding:14px;margin-bottom:22px">＋ Ajouter un compte</button>
     <h2 style="margin-bottom:12px">Mes comptes (${accounts.length})</h2>
     ${accounts.map(a => `<div class="vcard"><div class="t"><div><a href="${esc(a.url)}" target="_blank" rel="noopener"><b>${esc(a.handle)}</b></a><br><span class="muted" style="font-size:12px">${esc(a.login_user ? 'Login : ' + a.login_user : 'Login non renseigné')}</span></div>
         <span>${badge(a.status)} <button class="icon gray" data-act="editacc" data-acc="${esc(JSON.stringify(a))}" title="Modifier">✎</button></span></div>
       <div class="r"><span class="muted">Mot de passe</span>${pwCell(a)}</div>
       <div class="r"><span class="muted">Code 2FA</span>${codeCell(a)}</div></div>`).join('') || '<div class="empty">Aucun compte. Ajoute ton premier compte avec le bouton ci-dessus.</div>'}</div>`;
-  $('#payhead').onclick = () => ($('#paydet').hidden = !$('#paydet').hidden);
   $('#addacc').onclick = () => addLoginModal([], null);
 }
 

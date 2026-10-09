@@ -457,6 +457,41 @@ route('GET', '/api/codes', 'any', async ({ user, query }) => {
   return { codes, remaining: 30 - (Math.floor(Date.now() / 1000) % 30) };
 });
 
+// --- Équipe de managers
+route('GET', '/api/team', 'manager', async () => ({
+  managers: await q("SELECT id, username, name, last_login, created_at, retired FROM users WHERE role='manager' ORDER BY retired, lower(name)"),
+}));
+route('POST', '/api/managers', 'manager', async ({ body }) => {
+  const name = String(body.name || '').trim();
+  const username = String(body.username || '').trim().toLowerCase();
+  const password = String(body.password || '');
+  if (!name) throw bad('Nom requis');
+  if (!/^[a-z0-9._-]{3,32}$/.test(username)) throw bad('Pseudo : 3 à 32 caractères (lettres, chiffres, . _ -)');
+  if (password.length < 8) throw bad('Mot de passe : 8 caractères minimum');
+  if (await one('SELECT 1 AS x FROM users WHERE lower(username)=$1', [username])) throw bad('Ce pseudo existe déjà');
+  const r = await one("INSERT INTO users (username,name,role,password_hash) VALUES ($1,$2,'manager',$3) RETURNING id",
+    [username, name, hashPw(password)]);
+  return { id: r.id };
+});
+route('PATCH', '/api/managers/:id', 'manager', async ({ user, params, body }) => {
+  const id = intId(params.id);
+  if (id === user.id) throw bad('Tu ne peux pas te retirer toi-même');
+  if (!(await one("SELECT 1 AS x FROM users WHERE id=$1 AND role='manager'", [id]))) throw notFound();
+  const retired = body.retired ? 1 : 0;
+  await q('UPDATE users SET retired=$1 WHERE id=$2', [retired, id]);
+  // ses VA passent sous ta responsabilité
+  if (retired) await q("UPDATE users SET manager_id=$1 WHERE role='va' AND manager_id=$2", [user.id, id]);
+  return { ok: true };
+});
+route('POST', '/api/managers/:id/password', 'manager', async ({ user, params, body }) => {
+  const id = intId(params.id);
+  if (id === user.id) throw bad('Pour ton propre mot de passe, utilise « Changer mon mot de passe »');
+  if (!(await one("SELECT 1 AS x FROM users WHERE id=$1 AND role='manager'", [id]))) throw notFound();
+  if (String(body.password || '').length < 8) throw bad('Mot de passe : 8 caractères minimum');
+  await q('UPDATE users SET password_hash=$1 WHERE id=$2', [hashPw(body.password), id]);
+  return { ok: true };
+});
+
 // --- Pénalités
 route('GET', '/api/penalties', 'manager', async () => ({
   penalties: await q('SELECT p.*, u.name AS va_name FROM penalties p JOIN users u ON u.id=p.va_id ORDER BY p.id DESC LIMIT 500'),
